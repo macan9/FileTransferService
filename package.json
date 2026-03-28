@@ -1,0 +1,49 @@
+{
+  "name": "file-transfer-service",
+  "version": "0.1.0",
+  "description": "NestJS file server with Prisma, SQLite and local upload storage",
+  "private": true,
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "rimraf dist tsconfig.tsbuildinfo && npm run prisma:generate && tsc -p tsconfig.json",
+    "start": "ts-node src/main.ts",
+    "start:dev": "ts-node --transpile-only src/main.ts",
+    "start:prod": "node dist/main",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "format": "prettier --write \"src/**/*.ts\" \"prisma/**/*.prisma\"",
+    "lint": "eslint \"{src,test}/**/*.ts\""
+  },
+  "dependencies": {
+    "@libsql/client": "^0.17.2",
+    "@nestjs/common": "^11.1.17",
+    "@nestjs/config": "^4.0.2",
+    "@nestjs/core": "^11.1.17",
+    "@nestjs/platform-express": "^11.1.17",
+    "@nestjs/platform-socket.io": "^11.1.17",
+    "@nestjs/schedule": "^6.1.1",
+    "@nestjs/websockets": "^11.1.17",
+    "@prisma/adapter-libsql": "^7.5.0",
+    "@prisma/client": "^7.5.0",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.2",
+    "cron": "^4.4.0",
+    "multer": "^2.0.2",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "socket.io": "^4.8.3"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^11.0.10",
+    "@nestjs/schematics": "^11.0.9",
+    "@nestjs/testing": "^11.1.17",
+    "@types/express": "^5.0.3",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^24.6.0",
+    "prisma": "^7.5.0",
+    "rimraf": "^6.0.1",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.9.3"
+  }
+}

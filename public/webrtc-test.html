@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebRTC File Transfer Test</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4f1ea;
+        --panel: rgba(255, 252, 245, 0.92);
+        --ink: #1f2a37;
+        --muted: #64748b;
+        --line: rgba(31, 42, 55, 0.14);
+        --accent: #c2410c;
+        --accent-soft: #ffedd5;
+        --success: #166534;
+        --shadow: 0 18px 50px rgba(41, 37, 36, 0.12);
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(194, 65, 12, 0.12), transparent 28%),
+          radial-gradient(circle at right 20%, rgba(2, 132, 199, 0.1), transparent 24%),
+          linear-gradient(180deg, #f8f5ef 0%, var(--bg) 100%);
+      }
+
+      .shell { width: min(1180px, calc(100% - 32px)); margin: 32px auto; display: grid; gap: 20px; }
+      .hero, .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(10px);
+      }
+      .hero { padding: 28px; }
+      .hero h1 { margin: 0 0 10px; font-size: clamp(28px, 5vw, 44px); letter-spacing: -0.03em; }
+      .hero p { margin: 0; color: var(--muted); max-width: 820px; line-height: 1.7; }
+      .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+      .panel { padding: 22px; }
+      .panel h2 { margin: 0 0 16px; font-size: 20px; }
+      .stack, .status-list, .progress-list { display: grid; gap: 12px; }
+      label { display: grid; gap: 6px; font-size: 14px; color: var(--muted); }
+      input, textarea {
+        width: 100%;
+        border: 1px solid rgba(100, 116, 139, 0.3);
+        border-radius: 14px;
+        padding: 12px 14px;
+        font: inherit;
+        background: #fff;
+        color: var(--ink);
+      }
+      input[type='file'] { padding: 10px 12px; }
+      textarea { min-height: 110px; resize: vertical; }
+      .actions { display: flex; flex-wrap: wrap; gap: 10px; }
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 12px 18px;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+        transition: transform 140ms ease, box-shadow 140ms ease, opacity 140ms ease;
+      }
+      button:hover { transform: translateY(-1px); }
+      button.primary { background: var(--accent); color: white; box-shadow: 0 12px 24px rgba(194, 65, 12, 0.24); }
+      button.secondary { background: white; color: var(--ink); border: 1px solid var(--line); }
+      button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+      .status-item, .progress-card {
+        padding: 12px 14px;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.8);
+        border: 1px solid var(--line);
+      }
+      .status-item strong, .progress-card strong { display: block; margin-bottom: 4px; }
+      .progress-meta { color: var(--muted); font-size: 14px; }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border-radius: 999px;
+        padding: 8px 12px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .badge.good { background: rgba(22, 101, 52, 0.12); color: var(--success); }
+      .progress {
+        width: 100%;
+        height: 12px;
+        border-radius: 999px;
+        overflow: hidden;
+        background: rgba(148, 163, 184, 0.2);
+        margin-top: 10px;
+      }
+      .progress-bar {
+        height: 100%;
+        width: 0%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #c2410c, #ea580c);
+        transition: width 120ms ease;
+      }
+      .progress-bar.good { background: linear-gradient(90deg, #15803d, #22c55e); }
+      .download-link {
+        display: inline-block;
+        margin-top: 10px;
+        color: var(--accent);
+        font-weight: 600;
+        text-decoration: none;
+      }
+      .log {
+        min-height: 320px;
+        max-height: 520px;
+        overflow: auto;
+        padding: 14px;
+        border-radius: 18px;
+        background: #161616;
+        color: #f8fafc;
+        font-family: Consolas, "SFMono-Regular", monospace;
+        font-size: 13px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+      }
+      .tips { margin: 0; padding-left: 18px; color: var(--muted); line-height: 1.8; }
+      code { background: rgba(148, 163, 184, 0.16); padding: 2px 6px; border-radius: 6px; }
+      @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <section class="hero">
+        <span class="badge">Stage 4 · WebRTC File Transfer</span>
+        <h1>Peer-to-peer file transfer over DataChannel</h1>
+        <p>
+          This page supports string messaging and chunked file transfer on the same WebRTC DataChannel.
+          Open it in two browser windows, connect the peers, choose a file, and send it.
+          The receiver rebuilds the file locally and exposes a download link after reassembly completes.
+        </p>
+      </section>
+
+      <div class="grid">
+        <section class="panel">
+          <h2>Connection Setup</h2>
+          <div class="stack">
+            <label>Current Device ID<input id="deviceId" placeholder="Example: device-mac-001" /></label>
+            <label>Current Device Name<input id="deviceName" placeholder="Example: MacBook Pro" /></label>
+            <label>Platform<input id="platform" placeholder="Example: mac / windows / ios" /></label>
+            <label>Target Device ID<input id="targetDeviceId" placeholder="Example: device-win-002" /></label>
+            <div class="actions">
+              <button id="connectSignal" class="primary">Connect Signaling</button>
+              <button id="startRtc" class="secondary" disabled>Start WebRTC</button>
+              <button id="closeRtc" class="secondary" disabled>Close Connection</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Status</h2>
+          <div class="status-list">
+            <div class="status-item"><strong>Signaling</strong><span id="signalStatus" class="badge">not connected</span></div>
+            <div class="status-item"><strong>PeerConnection</strong><span id="peerStatus" class="badge">not created</span></div>
+            <div class="status-item"><strong>DataChannel</strong><span id="channelStatus" class="badge">not created</span></div>
+          </div>
+        </section>
+      </div>
+
+      <div class="grid">
+        <section class="panel">
+          <h2>Message Test</h2>
+          <div class="stack">
+            <label>Message<textarea id="messageInput" placeholder="Type any string here"></textarea></label>
+            <div class="actions">
+              <button id="sendMessage" class="primary" disabled>Send String</button>
+              <button id="sendPing" class="secondary" disabled>Send Ping</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>File Transfer</h2>
+          <div class="stack">
+            <label>File<input id="fileInput" type="file" /></label>
+            <div class="actions">
+              <button id="sendFile" class="primary" disabled>Send File</button>
+            </div>
+            <div class="progress-list">
+              <div class="progress-card">
+                <strong>Sending Progress</strong>
+                <div id="sendProgressText" class="progress-meta">No file is being sent.</div>
+                <div class="progress"><div id="sendProgressBar" class="progress-bar"></div></div>
+              </div>
+              <div class="progress-card">
+                <strong>Receiving Progress</strong>
+                <div id="receiveProgressText" class="progress-meta">No file is being received.</div>
+                <div class="progress"><div id="receiveProgressBar" class="progress-bar"></div></div>
+                <a id="downloadLink" class="download-link" hidden download>Download received file</a>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="grid">
+        <section class="panel">
+          <h2>Quick Steps</h2>
+          <ol class="tips">
+            <li>Open this page in two browser windows.</li>
+            <li>Use a different <code>deviceId</code> in each window.</li>
+            <li>Click <code>Connect Signaling</code> on both sides.</li>
+            <li>On side A, enter side B's <code>deviceId</code>.</li>
+            <li>Click <code>Start WebRTC</code> on side A.</li>
+            <li>Wait until the DataChannel status changes to <code>open</code>.</li>
+            <li>Choose a file and click <code>Send File</code>.</li>
+            <li>Wait until the receiver reaches 100% and use the download link.</li>
+          </ol>
+        </section>
+
+        <section class="panel">
+          <h2>Transfer Notes</h2>
+          <ol class="tips">
+            <li>Files are split into fixed-size chunks before sending.</li>
+            <li>Each binary chunk carries a small header with the chunk index.</li>
+            <li>The receiver caches chunks in memory and rebuilds a Blob when complete.</li>
+            <li>The current demo handles one active incoming file transfer at a time.</li>
+          </ol>
+        </section>
+      </div>
+
+      <section class="panel">
+        <h2>Runtime Log</h2>
+        <div id="log" class="log"></div>
+      </section>
+    </div>
+
+    <script src="https://cdn.socket.io/4.8.3/socket.io.min.js"></script>
+    <script src="/webrtc-test.js"></script>
+  </body>
+</html>
