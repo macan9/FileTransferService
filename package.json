@@ -7,7 +7,7 @@
   "scripts": {
     "build": "rimraf dist tsconfig.tsbuildinfo && npm run prisma:generate && tsc -p tsconfig.json",
     "start": "ts-node src/main.ts",
-    "start:dev": "ts-node --transpile-only src/main.ts",
+    "start:dev": "nest start --watch",
     "start:prod": "node dist/main",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
@@ -40,6 +40,7 @@
     "@types/express": "^5.0.3",
     "@types/multer": "^2.0.0",
     "@types/node": "^24.6.0",
+    "nodemon": "^3.1.10",
     "prisma": "^7.5.0",
     "rimraf": "^6.0.1",
     "ts-node": "^10.9.2",

@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { mkdirSync } from 'fs';
-import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
+import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { resolve } from 'path';
 import { AppModule } from './app.module';
@@ -33,4 +33,15 @@ async function bootstrap() {
   console.log(`File transfer service started at http://localhost:${port}`);
 }
 
-bootstrap();
+bootstrap().catch((error: NodeJS.ErrnoException) => {
+  if (error.code === 'EADDRINUSE') {
+    const port = Number(process.env.PORT ?? 3000);
+    console.error(
+      `Port ${port} is already in use. Stop the existing process or set a different PORT before starting the service again.`,
+    );
+    process.exit(1);
+  }
+
+  console.error('Failed to start file transfer service.', error);
+  process.exit(1);
+});

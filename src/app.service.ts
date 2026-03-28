@@ -1,20 +1,30 @@
 import 'dotenv/config';
 import {
+  BadRequestException,
   Injectable,
   Logger,
   NotFoundException,
   OnModuleDestroy,
   OnModuleInit,
+  PayloadTooLargeException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import { PrismaClient } from '@prisma/client';
 import { PrismaLibSql } from '@prisma/adapter-libsql';
-import { access, unlink } from 'fs/promises';
+import { access, readdir, stat, unlink } from 'fs/promises';
 import { constants } from 'fs';
+import { resolve } from 'path';
+import {
+  SINGLE_FILE_SIZE_LIMIT_BYTES,
+  UPLOADS_TOTAL_SIZE_LIMIT_BYTES,
+} from './file.constants';
+import { HTTP_TRANSFER_RATE_LIMIT_BYTES_PER_SECOND } from './bandwidth.constants';
+import { normalizeUploadedFilename } from './file-name.util';
 
 const DEFAULT_FILE_RETENTION_DAYS = 7;
 const DEFAULT_FILE_CLEANUP_CRON = '0 0 * * * *';
+const uploadDir = resolve(process.cwd(), 'uploads');
 
 @Injectable()
 export class AppService implements OnModuleInit, OnModuleDestroy {
@@ -25,9 +35,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     }),
   });
 
-  constructor(
-    private readonly configService: ConfigService,
-  ) {}
+  constructor(private readonly configService: ConfigService) {}
 
   async onModuleInit(): Promise<void> {
     await this.prisma.$connect();
@@ -47,6 +55,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       message: 'File transfer service is running',
       endpoints: {
         upload: 'POST /files/upload',
+        httpUploadDemo: 'GET /http-upload.html',
         list: 'GET /files',
         download: 'GET /files/:id/download',
         delete: 'DELETE /files/:id',
@@ -63,24 +72,58 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
   }
 
   async createFileRecord(file: Express.Multer.File) {
-    return this.prisma.fileRecord.create({
-      data: {
-        originalName: file.originalname,
-        filename: file.filename,
-        mimeType: file.mimetype,
-        size: file.size,
-        storagePath: file.path,
-        url: `/uploads/${file.filename}`,
-      },
-    });
+    if (file.size > SINGLE_FILE_SIZE_LIMIT_BYTES) {
+      await this.removePhysicalFile(file.path);
+      throw new PayloadTooLargeException(
+        'Single file size must not exceed 200 MB.',
+      );
+    }
+
+    const uploadsSize = await this.getUploadsDirectorySize();
+
+    if (uploadsSize > UPLOADS_TOTAL_SIZE_LIMIT_BYTES) {
+      await this.removePhysicalFile(file.path);
+      throw new PayloadTooLargeException(
+        'Server storage limit reached, please free up space and try again.',
+      );
+    }
+
+    try {
+      const created = await this.prisma.fileRecord.create({
+        data: {
+          originalName: normalizeUploadedFilename(file.originalname),
+          filename: file.filename,
+          mimeType: file.mimetype,
+          size: file.size,
+          storagePath: file.path,
+          url: '',
+        },
+      });
+
+      return this.prisma.fileRecord.update({
+        where: { id: created.id },
+        data: {
+          url: `/files/${created.id}/download`,
+        },
+      });
+    } catch (error) {
+      await this.removePhysicalFile(file.path);
+      throw error;
+    }
   }
 
   async getFiles() {
-    return this.prisma.fileRecord.findMany({
+    const records = await this.prisma.fileRecord.findMany({
       orderBy: {
         createdAt: 'desc',
       },
     });
+
+    return records.map((record) => ({
+      ...record,
+      originalName: normalizeUploadedFilename(record.originalName),
+      url: `/files/${record.id}/download`,
+    }));
   }
 
   async getFileById(id: number) {
@@ -92,7 +135,10 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       throw new NotFoundException(`File with id ${id} not found`);
     }
 
-    return fileRecord;
+    return {
+      ...fileRecord,
+      originalName: normalizeUploadedFilename(fileRecord.originalName),
+    };
   }
 
   async ensureFileExists(storagePath: string) {
@@ -101,6 +147,21 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     } catch {
       throw new NotFoundException('File content does not exist on disk');
     }
+  }
+
+  async getUploadLimits() {
+    const currentUsageBytes = await this.getUploadsDirectorySize();
+
+    return {
+      singleFileLimitBytes: SINGLE_FILE_SIZE_LIMIT_BYTES,
+      totalUploadsLimitBytes: UPLOADS_TOTAL_SIZE_LIMIT_BYTES,
+      currentUsageBytes,
+      remainingBytes: Math.max(
+        UPLOADS_TOTAL_SIZE_LIMIT_BYTES - currentUsageBytes,
+        0,
+      ),
+      transferRateLimitBytesPerSecond: HTTP_TRANSFER_RATE_LIMIT_BYTES_PER_SECOND,
+    };
   }
 
   async deleteFileById(id: number) {
@@ -178,6 +239,34 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       if (fileError.code !== 'ENOENT') {
         throw fileError;
       }
+    }
+  }
+
+  private async getUploadsDirectorySize() {
+    try {
+      const entries = await readdir(uploadDir, { withFileTypes: true });
+      let totalSize = 0;
+
+      for (const entry of entries) {
+        if (!entry.isFile()) {
+          continue;
+        }
+
+        const entryPath = resolve(uploadDir, entry.name);
+        const entryStat = await stat(entryPath);
+        totalSize += entryStat.size;
+      }
+
+      return totalSize;
+    } catch (error) {
+      const fileError = error as NodeJS.ErrnoException;
+      if (fileError.code === 'ENOENT') {
+        return 0;
+      }
+
+      throw new BadRequestException(
+        'Unable to inspect server storage usage, please try again later.',
+      );
     }
   }
 

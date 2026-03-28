@@ -12,25 +12,24 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
-import { extname, resolve } from 'path';
-import { mkdirSync } from 'fs';
-import { randomUUID } from 'crypto';
+import { createReadStream } from 'fs';
+import { stat } from 'fs/promises';
 import type { Response } from 'express';
 import { AppService } from './app.service';
+import { SINGLE_FILE_SIZE_LIMIT_BYTES } from './file.constants';
+import { HTTP_TRANSFER_RATE_LIMIT_BYTES_PER_SECOND } from './bandwidth.constants';
+import {
+  buildAttachmentContentDisposition,
+  normalizeUploadedFilename,
+} from './file-name.util';
+import { RateLimitTransform } from './rate-limit.transform';
+import { RateLimitedDiskStorage } from './rate-limited-storage';
 
-const uploadDir = resolve(process.cwd(), 'uploads');
-
-const storage = diskStorage({
-  destination: (_req, _file, callback) => {
-    mkdirSync(uploadDir, { recursive: true });
-    callback(null, uploadDir);
-  },
-  filename: (_req, file, callback) => {
-    const extension = extname(file.originalname);
-    callback(null, `${Date.now()}-${randomUUID()}${extension}`);
-  },
-});
+const uploadDir = `${process.cwd()}\\uploads`;
+const storage = new RateLimitedDiskStorage(
+  uploadDir,
+  HTTP_TRANSFER_RATE_LIMIT_BYTES_PER_SECOND,
+);
 
 @Controller()
 export class AppController {
@@ -46,6 +45,11 @@ export class AppController {
     return this.appService.getFiles();
   }
 
+  @Get('files/limits')
+  async getFileLimits() {
+    return this.appService.getUploadLimits();
+  }
+
   @Get('files/:id/download')
   async downloadFile(
     @Param('id', ParseIntPipe) id: number,
@@ -53,8 +57,18 @@ export class AppController {
   ) {
     const fileRecord = await this.appService.getFileById(id);
     await this.appService.ensureFileExists(fileRecord.storagePath);
+    const fileStat = await stat(fileRecord.storagePath);
 
-    return res.download(fileRecord.storagePath, fileRecord.originalName);
+    res.setHeader('Content-Type', fileRecord.mimeType);
+    res.setHeader(
+      'Content-Disposition',
+      buildAttachmentContentDisposition(fileRecord.originalName),
+    );
+    res.setHeader('Content-Length', fileStat.size.toString());
+
+    return createReadStream(fileRecord.storagePath)
+      .pipe(new RateLimitTransform(HTTP_TRANSFER_RATE_LIMIT_BYTES_PER_SECOND))
+      .pipe(res);
   }
 
   @Delete('files/:id')
@@ -67,11 +81,16 @@ export class AppController {
     FileInterceptor('file', {
       storage,
       limits: {
-        fileSize: 20 * 1024 * 1024,
+        fileSize: SINGLE_FILE_SIZE_LIMIT_BYTES,
       },
       fileFilter: (_req, file, callback) => {
         if (!file.originalname) {
-          callback(new BadRequestException('Invalid file name'), false);
+          callback(
+            new BadRequestException(
+              'Invalid file name, please choose the file again.',
+            ),
+            false,
+          );
           return;
         }
 
@@ -83,19 +102,21 @@ export class AppController {
     @UploadedFile(
       new ParseFilePipeBuilder()
         .addMaxSizeValidator({
-          maxSize: 20 * 1024 * 1024,
+          maxSize: SINGLE_FILE_SIZE_LIMIT_BYTES,
         })
         .build({
           fileIsRequired: true,
+          errorHttpStatusCode: 413,
         }),
     )
     file: Express.Multer.File,
   ) {
     const saved = await this.appService.createFileRecord(file);
+    const originalName = normalizeUploadedFilename(saved.originalName);
 
     return {
       id: saved.id,
-      originalName: saved.originalName,
+      originalName,
       filename: saved.filename,
       mimeType: saved.mimeType,
       size: saved.size,
