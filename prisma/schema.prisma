@@ -20,4 +20,5 @@ model FileRecord {
   storagePath  String
   url          String
   createdAt    DateTime @default(now())
+  deletedAt    DateTime?
 }

@@ -22,8 +22,8 @@ import {
 import { HTTP_TRANSFER_RATE_LIMIT_BYTES_PER_SECOND } from './bandwidth.constants';
 import { normalizeUploadedFilename } from './file-name.util';
 
-const DEFAULT_FILE_RETENTION_DAYS = 7;
-const DEFAULT_FILE_CLEANUP_CRON = '0 0 * * * *';
+const DEFAULT_TRASH_RETENTION_DAYS = 30;
+const DEFAULT_TRASH_CLEANUP_CRON = '0 0 * * * *';
 const uploadDir = resolve(process.cwd(), 'uploads');
 
 @Injectable()
@@ -40,9 +40,9 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
   async onModuleInit(): Promise<void> {
     await this.prisma.$connect();
     this.logger.log(
-      `Expired file cleanup ${
-        this.isCleanupEnabled() ? 'enabled' : 'disabled'
-      }, cron="${this.getCleanupCronExpression()}", retentionDays=${this.getRetentionDays()}`,
+      `Trash cleanup ${
+        this.isTrashCleanupEnabled() ? 'enabled' : 'disabled'
+      }, cron="${this.getTrashCleanupCronExpression()}", retentionDays=${this.getTrashRetentionDays()}`,
     );
   }
 
@@ -57,16 +57,20 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
         upload: 'POST /files/upload',
         httpUploadDemo: 'GET /http-upload.html',
         list: 'GET /files',
+        trashList: 'GET /files/trash',
         download: 'GET /files/:id/download',
         delete: 'DELETE /files/:id',
+        permanentlyDeleteTrashItem: 'DELETE /files/trash/:id',
+        restoreTrashItem: 'POST /files/trash/:id/restore',
+        emptyTrash: 'DELETE /files/trash',
         onlineUsers: 'GET /signaling/online-users',
         websocket: 'WS /signaling',
         webrtcDemo: 'GET /webrtc-test.html',
       },
-      cleanup: {
-        enabled: this.isCleanupEnabled(),
-        cron: this.getCleanupCronExpression(),
-        retentionDays: this.getRetentionDays(),
+      trashCleanup: {
+        enabled: this.isTrashCleanupEnabled(),
+        cron: this.getTrashCleanupCronExpression(),
+        retentionDays: this.getTrashRetentionDays(),
       },
     };
   }
@@ -114,16 +118,30 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
 
   async getFiles() {
     const records = await this.prisma.fileRecord.findMany({
+      where: {
+        deletedAt: null,
+      },
       orderBy: {
         createdAt: 'desc',
       },
     });
 
-    return records.map((record) => ({
-      ...record,
-      originalName: normalizeUploadedFilename(record.originalName),
-      url: `/files/${record.id}/download`,
-    }));
+    return records.map((record) => this.serializeFileRecord(record));
+  }
+
+  async getTrashFiles() {
+    const records = await this.prisma.fileRecord.findMany({
+      where: {
+        deletedAt: {
+          not: null,
+        },
+      },
+      orderBy: {
+        deletedAt: 'desc',
+      },
+    });
+
+    return records.map((record) => this.serializeFileRecord(record));
   }
 
   async getFileById(id: number) {
@@ -135,10 +153,11 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       throw new NotFoundException(`File with id ${id} not found`);
     }
 
-    return {
-      ...fileRecord,
-      originalName: normalizeUploadedFilename(fileRecord.originalName),
-    };
+    if (fileRecord.deletedAt) {
+      throw new NotFoundException(`File with id ${id} not found`);
+    }
+
+    return this.serializeFileRecord(fileRecord);
   }
 
   async ensureFileExists(storagePath: string) {
@@ -166,6 +185,24 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
 
   async deleteFileById(id: number) {
     const fileRecord = await this.getFileById(id);
+
+    const deletedAt = new Date();
+    const deletedRecord = await this.prisma.fileRecord.update({
+      where: { id },
+      data: {
+        deletedAt,
+      },
+    });
+
+    return {
+      ...this.serializeFileRecord(deletedRecord),
+      message: 'File moved to trash.',
+      deleted: true,
+    };
+  }
+
+  async permanentlyDeleteTrashFileById(id: number) {
+    const fileRecord = await this.getTrashFileById(id);
     await this.removePhysicalFile(fileRecord.storagePath);
 
     await this.prisma.fileRecord.delete({
@@ -174,38 +211,101 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
 
     return {
       id: fileRecord.id,
+      originalName: fileRecord.originalName,
       filename: fileRecord.filename,
-      deleted: true,
+      permanentlyDeleted: true,
     };
   }
 
-  @Cron(process.env.FILE_CLEANUP_CRON ?? DEFAULT_FILE_CLEANUP_CRON)
-  async cleanExpiredFiles() {
-    if (!this.isCleanupEnabled()) {
+  async restoreTrashFileById(id: number) {
+    const fileRecord = await this.getTrashFileById(id);
+    await this.ensureFileExists(fileRecord.storagePath);
+
+    const restoredRecord = await this.prisma.fileRecord.update({
+      where: { id },
+      data: {
+        deletedAt: null,
+      },
+    });
+
+    return {
+      ...this.serializeFileRecord(restoredRecord),
+      restored: true,
+      message: 'File restored from trash.',
+    };
+  }
+
+  async emptyTrash() {
+    const trashFiles = await this.prisma.fileRecord.findMany({
+      where: {
+        deletedAt: {
+          not: null,
+        },
+      },
+      orderBy: {
+        deletedAt: 'asc',
+      },
+    });
+
+    if (trashFiles.length === 0) {
+      return {
+        cleared: true,
+        deletedCount: 0,
+      };
+    }
+
+    let deletedCount = 0;
+
+    for (const trashFile of trashFiles) {
+      try {
+        await this.removePhysicalFile(trashFile.storagePath);
+        await this.prisma.fileRecord.delete({
+          where: { id: trashFile.id },
+        });
+        deletedCount += 1;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.error(
+          `Failed to permanently delete trash file id=${trashFile.id}, filename=${trashFile.filename}: ${message}`,
+        );
+      }
+    }
+
+    return {
+      cleared: true,
+      deletedCount,
+      totalCount: trashFiles.length,
+    };
+  }
+
+  @Cron(process.env.FILE_TRASH_CLEANUP_CRON ?? process.env.FILE_CLEANUP_CRON ?? DEFAULT_TRASH_CLEANUP_CRON)
+  async cleanExpiredTrashFiles() {
+    if (!this.isTrashCleanupEnabled()) {
       return;
     }
 
-    const retentionDays = this.getRetentionDays();
+    const retentionDays = this.getTrashRetentionDays();
 
     if (retentionDays <= 0) {
-      this.logger.warn('Expired file cleanup skipped because retentionDays <= 0');
+      this.logger.warn('Trash cleanup skipped because retentionDays <= 0');
       return;
     }
 
     const cutoffDate = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
     const expiredFiles = await this.prisma.fileRecord.findMany({
       where: {
-        createdAt: {
+        deletedAt: {
+          not: null,
           lt: cutoffDate,
         },
       },
       orderBy: {
-        createdAt: 'asc',
+        deletedAt: 'asc',
       },
     });
 
     if (expiredFiles.length === 0) {
-      this.logger.debug('Expired file cleanup found no expired files');
+      this.logger.debug('Trash cleanup found no expired files');
       return;
     }
 
@@ -227,8 +327,20 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.logger.log(
-      `Expired file cleanup finished. Removed ${deletedCount}/${expiredFiles.length} expired file(s)`,
+      `Trash cleanup finished. Removed ${deletedCount}/${expiredFiles.length} expired file(s)`,
     );
+  }
+
+  private async getTrashFileById(id: number) {
+    const fileRecord = await this.prisma.fileRecord.findUnique({
+      where: { id },
+    });
+
+    if (!fileRecord || !fileRecord.deletedAt) {
+      throw new NotFoundException(`Trash file with id ${id} not found`);
+    }
+
+    return this.serializeFileRecord(fileRecord);
   }
 
   private async removePhysicalFile(storagePath: string) {
@@ -270,8 +382,20 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private isCleanupEnabled() {
-    const rawValue = this.configService.get<string>('FILE_CLEANUP_ENABLED');
+  private serializeFileRecord<T extends { originalName: string; id: number }>(
+    record: T,
+  ) {
+    return {
+      ...record,
+      originalName: normalizeUploadedFilename(record.originalName),
+      url: `/files/${record.id}/download`,
+    };
+  }
+
+  private isTrashCleanupEnabled() {
+    const rawValue =
+      this.configService.get<string>('FILE_TRASH_CLEANUP_ENABLED') ??
+      this.configService.get<string>('FILE_CLEANUP_ENABLED');
 
     if (!rawValue) {
       return true;
@@ -280,20 +404,24 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     return rawValue.toLowerCase() !== 'false';
   }
 
-  private getRetentionDays() {
-    const rawValue = this.configService.get<string>('FILE_RETENTION_DAYS');
-    const retentionDays = Number(rawValue ?? DEFAULT_FILE_RETENTION_DAYS);
+  private getTrashRetentionDays() {
+    const rawValue =
+      this.configService.get<string>('FILE_TRASH_RETENTION_DAYS') ??
+      this.configService.get<string>('FILE_RETENTION_DAYS');
+    const retentionDays = Number(rawValue ?? DEFAULT_TRASH_RETENTION_DAYS);
 
     if (!Number.isFinite(retentionDays)) {
-      return DEFAULT_FILE_RETENTION_DAYS;
+      return DEFAULT_TRASH_RETENTION_DAYS;
     }
 
     return retentionDays;
   }
 
-  private getCleanupCronExpression() {
+  private getTrashCleanupCronExpression() {
     return (
-      this.configService.get<string>('FILE_CLEANUP_CRON') ?? DEFAULT_FILE_CLEANUP_CRON
+      this.configService.get<string>('FILE_TRASH_CLEANUP_CRON') ??
+      this.configService.get<string>('FILE_CLEANUP_CRON') ??
+      DEFAULT_TRASH_CLEANUP_CRON
     );
   }
 }

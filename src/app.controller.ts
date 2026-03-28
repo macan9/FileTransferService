@@ -45,6 +45,11 @@ export class AppController {
     return this.appService.getFiles();
   }
 
+  @Get('files/trash')
+  async getTrashFiles() {
+    return this.appService.getTrashFiles();
+  }
+
   @Get('files/limits')
   async getFileLimits() {
     return this.appService.getUploadLimits();
@@ -69,6 +74,21 @@ export class AppController {
     return createReadStream(fileRecord.storagePath)
       .pipe(new RateLimitTransform(HTTP_TRANSFER_RATE_LIMIT_BYTES_PER_SECOND))
       .pipe(res);
+  }
+
+  @Delete('files/trash/:id')
+  async permanentlyDeleteTrashFile(@Param('id', ParseIntPipe) id: number) {
+    return this.appService.permanentlyDeleteTrashFileById(id);
+  }
+
+  @Post('files/trash/:id/restore')
+  async restoreTrashFile(@Param('id', ParseIntPipe) id: number) {
+    return this.appService.restoreTrashFileById(id);
+  }
+
+  @Delete('files/trash')
+  async emptyTrash() {
+    return this.appService.emptyTrash();
   }
 
   @Delete('files/:id')
