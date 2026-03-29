@@ -15,6 +15,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { createReadStream } from 'fs';
 import { stat } from 'fs/promises';
 import type { Response } from 'express';
+import { resolve } from 'path';
 import { AppService } from './app.service';
 import { SINGLE_FILE_SIZE_LIMIT_BYTES } from './file.constants';
 import { HTTP_TRANSFER_RATE_LIMIT_BYTES_PER_SECOND } from './bandwidth.constants';
@@ -25,7 +26,7 @@ import {
 import { RateLimitTransform } from './rate-limit.transform';
 import { RateLimitedDiskStorage } from './rate-limited-storage';
 
-const uploadDir = `${process.cwd()}\\uploads`;
+const uploadDir = resolve(process.cwd(), 'uploads');
 const storage = new RateLimitedDiskStorage(
   uploadDir,
   HTTP_TRANSFER_RATE_LIMIT_BYTES_PER_SECOND,

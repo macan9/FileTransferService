@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import 'reflect-metadata';
 import { mkdirSync } from 'fs';
 import { ValidationPipe } from '@nestjs/common';
