@@ -55,8 +55,28 @@ npm run start:prod
 - `POST /files/trash/:id/restore`
 - `DELETE /files/trash`
 - `GET /signaling/online-users`
+- `GET /signaling/devices`
 - `GET /webrtc-test.html`
 - `WS /signaling`
+
+## Device Presence Notes
+
+Signaling now maintains device presence in memory for registration and display.
+
+- `GET /signaling/devices`: returns all registered devices, including `online` and `offline` states
+- `GET /signaling/online-users`: returns online devices only
+- `client:heartbeat`: websocket heartbeat event used to refresh `lastHeartbeatAt`
+
+Tracked device fields:
+
+- `deviceId`: stable unique identifier used internally
+- `deviceName`: display name used by the frontend list
+- `platform`: device platform
+- `socketId`: current signaling socket id, `null` when offline
+- `status`: `online` or `offline`
+- `lastHeartbeatAt`: last heartbeat timestamp
+- `connectedAt`: current session connected timestamp
+- `disconnectedAt`: last disconnect timestamp
 
 ## 文档说明
 
